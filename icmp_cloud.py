@@ -41,19 +41,19 @@ class Client(object):
 		unpacked_data = struct.unpack(struct_format, data)
 		return dict(zip(names, unpacked_data))
 
-	def generate_src_dst(self, my_ip, num_of_hosts):
-		src = "10.0.0." + random.randint(1, num_of_hosts)
-		while src == my_ip:
-			src = "10.0.0." + random.randint(1, num_of_hosts)
-		dst = "10.0.0." + random.randint(1, num_of_hosts)
-		while dst == my_ip or src == dst:
-			dst = "10.0.0." + random.randint(1, num_of_hosts)
+	def generate_src_dst(self):
+		src = "10.0.0." + random.randint(1, self.num_of_hosts)
+		while src == self.my_ip:
+			src = "10.0.0." + random.randint(1, self.num_of_hosts)
+		dst = "10.0.0." + random.randint(1, self.num_of_hosts)
+		while dst == self.my_ip or src == dst:
+			dst = "10.0.0." + random.randint(1, self.num_of_hosts)
 		return src, dst
 
-	def send_packet(self, my_ip, num_of_hosts, connection_socket, mode="send_chunk", chunk_id=None, chunk_data=None, file_name=None, src_ip=None):
+	def send_packet(self, mode="send_chunk", chunk_id=None, chunk_data=None, file_name=None, src_ip=None):
 		if mode == "send_chunk":
 			ip = ImpactPacket.IP()
-			src, dst = self.generate_src_dst(my_ip, num_of_hosts)
+			src, dst = self.generate_src_dst()
 			if src_ip is not None:
 				src = src_ip
 			ip.set_ip_src(src)
@@ -76,11 +76,11 @@ class Client(object):
 			icmp.auto_checksum = 1
 
 			# send the provided ICMP packet over a 3rd socket
-			connection_socket.sendto(ip.get_packet(), (dst, 1)) # Port number is irrelevant for ICMP
+			self.connection_socket.sendto(ip.get_packet(), (dst, 1)) # Port number is irrelevant for ICMP
 
 		elif mode == "return_home":
 			ip = ImpactPacket.IP()
-			src, dst = self.generate_src_dst(my_ip, num_of_hosts)
+			src, dst = self.generate_src_dst()
 			ip.set_ip_src(src)
 			ip.set_ip_dst(dst)
 
@@ -90,7 +90,7 @@ class Client(object):
 
 			#inlude a small payload inside the ICMP packet
 			#and have the ip packet contain the ICMP packet
-			icmp.contains(ImpactPacket.Data("return_home" + "$" + file_name + "$" + my_ip))
+			icmp.contains(ImpactPacket.Data("return_home" + "$" + file_name + "$" + self.my_ip))
 			ip.contains(icmp)
 
 			#give the ICMP packet some ID
@@ -101,10 +101,10 @@ class Client(object):
 			icmp.auto_checksum = 1
 
 			# send the provided ICMP packet over a 3rd socket
-			connection_socket.sendto(ip.get_packet(), (dst, 1)) # Port number is irrelevant for ICMP
+			self.connection_socket.sendto(ip.get_packet(), (dst, 1)) # Port number is irrelevant for ICMP
 
-	def receive_packet(self, connection_socket):
-		packet_data, address = connection_socket.recvfrom(ICMP_MAX_RECV)
+	def receive_packet(self):
+		packet_data, address = self.connection_socket.recvfrom(ICMP_MAX_RECV)
 
 		icmp_header = self.header2dict(
 			names=[
@@ -121,12 +121,12 @@ class Client(object):
 				self.wanted_files[payload_data[1]] = payload_data[2]
 			else:
 				if payload_data[0] in self.wanted_files:
-					self.send_packet(self.my_ip, self.num_of_hosts, self.connection_socket, chunk_id=int(icmp_header["id"]),
+					self.send_packet(chunk_id=int(icmp_header["id"]),
 						chunk_data=payload_data[1], file_name=payload_data[0], src_ip=self.wanted_files[payload_data[0]])
 				elif payload_data[0] in self.added_files:
 					self.collect_chunk(payload_data[0], payload_data[1], int(icmp_header["id"]))
 				else:
-					self.send_packet(self.my_ip, self.num_of_hosts, self.connection_socket, chunk_id=int(icmp_header["id"]),
+					self.send_packet(chunk_id=int(icmp_header["id"]),
 						chunk_data=payload_data[1], file_name=payload_data[0])
 			return
 		else:
@@ -152,22 +152,23 @@ class Client(object):
 			f.write(chunks[i])
 		f.close()
 
-	def run_server(self, my_ip, num_of_hosts):
-		# create socket
-		
+	def run_server(self):
 		while True:
 			inputready, outputready, exceptionready = select.select([self.connection_socket, sys.stdin], [], [])
-			# select stdin and socket
 			if sys.stdin in inputready:
 				command = ""
 				raw_input(command)
 				commandParts = command.split(" ")
 				if commandParts[0] == "return_home":
-					self.send_packet(my_ip, num_of_hosts, self.connection_socket, mode="return_home", file_name=commandParts[1])
+					self.send_packet(mode="return_home", file_name=commandParts[1])
 				elif commandParts[0] == "add_file":
 					chunks = self.split_file(commandParts[1])
 					self.added_files[commandParts[1]] = len(chunks)
 					for chunk_id, chunk in enumerate(chunks):
-						self.send_packet(my_ip, num_of_hosts, self.connection_socket, chunk_id=chunk_id, chunk_data=chunk, file_name=commandParts[1])
+						self.send_packet(chunk_id=chunk_id, chunk_data=chunk, file_name=commandParts[1])
 			elif self.connection_socket in inputready:
-				self.receive_packet(self.connection_socket)
+				self.receive_packet()
+
+if __name__ == "__main__":
+		client = Client(sys.argv[1], int(sys.argv[2]))
+		client.run_server()
