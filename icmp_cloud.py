@@ -18,16 +18,6 @@ import socket,sys
 import random
 from impacket import ImpactPacket
 
-
-
-if sys.platform.startswith("win32"):
-	# On Windows, the best timer is time.clock()
-	default_timer = time.clock
-else:
-	# On most other platforms the best timer is time.time()
-	default_timer = time.time
-
-
 # ICMP parameters
 ICMP_ECHOREPLY = 0 # Echo reply (per RFC792)
 ICMP_ECHO = 8 # Echo request (per RFC792)
@@ -35,501 +25,149 @@ ICMP_MAX_RECV = 2048 # Max size of incoming buffer
 
 MAX_SLEEP = 1000
 
+class Client(object):
 
-
-def is_valid_ip4_address(addr):
-	parts = addr.split(".")
-	if not len(parts) == 4:
-		return False
-	for part in parts:
-		try:
-			number = int(part)
-		except ValueError:
-			return False
-		if number > 255 or number < 0:
-			return False
-	return True
-
-def to_ip(addr):
-	if is_valid_ip4_address(addr):
-		return addr
-	return socket.gethostbyname(addr)
-
-
-class Response(object):
-	def __init__(self):
-		self.max_rtt = None
-		self.min_rtt = None
-		self.avg_rtt = None
-		self.packet_lost = None
-		self.ret_code = None
-		self.output = []
-
-		self.packet_size = None
-		self.timeout = None
-		self.source = None
-		self.destination = None
-		self.destination_ip = None
-
-class Ping(object):
-	def __init__(self, source, destination, timeout=1000, packet_size=55, own_id=None, quiet_output=False, udp=False, bind=None):
-		self.quiet_output = quiet_output
-		if quiet_output:
-			self.response = Response()
-			self.response.destination = destination
-			self.response.timeout = timeout
-			self.response.packet_size = packet_size
-
-		self.destination = destination
-		self.source = source
-		self.timeout = timeout
-		self.packet_size = packet_size
-		self.udp = udp
-		self.bind = bind
-
-		if own_id is None:
-			self.own_id = os.getpid() & 0xFFFF
-		else:
-			self.own_id = own_id
-
-		try:
-			self.dest_ip = to_ip(self.destination)
-			if quiet_output:
-				self.response.destination_ip = self.dest_ip
-		except socket.gaierror as e:
-			self.print_unknown_host(e)
-		else:
-			self.print_start()
-
-		self.seq_number = 0
-		self.send_count = 0
-		self.receive_count = 0
-		self.min_time = 999999999
-		self.max_time = 0.0
-		self.total_time = 0.0
-
-	#--------------------------------------------------------------------------
-
-	def print_start(self):
-		msg = "\nPYTHON-PING %s (%s): %d data bytes" % (self.destination, self.dest_ip, self.packet_size)
-		if self.quiet_output:
-			self.response.output.append(msg)
-		else:
-			print(msg)
-
-	def print_unknown_host(self, e):
-		msg = "\nPYTHON-PING: Unknown host: %s (%s)\n" % (self.destination, e.args[1])
-		if self.quiet_output:
-			self.response.output.append(msg)
-			self.response.ret_code = 1
-		else:
-			print(msg)
-
-		raise Exception, "unknown_host"
-		#sys.exit(-1)
-
-	def print_success(self, delay, ip, packet_size, ip_header, icmp_header, header=False):
-		if ip == self.destination:
-			from_info = ip
-		else:
-			from_info = "%s (%s)" % (self.destination, ip)
-
-	   	msg = "%d bytes from %s: icmp_seq=%d ttl=%d time=%.1f ms" % (packet_size, from_info, icmp_header["seq_number"], ip_header["ttl"], delay)
-
-		if self.quiet_output:
-			self.response.output.append(msg)
-			self.response.ret_code = 0
-		else:
-			print(msg)
-		if header:
-			print("IP header: %r" % ip_header)
-			print("ICMP header: %r" % icmp_header)
-
-	def print_failed(self):
-		msg = "Request timed out."
-
-		if self.quiet_output:
-			self.response.output.append(msg)
-			self.response.ret_code = 1
-		else:
-			print(msg)
-
-	def print_exit(self):
-		msg = "\n----%s PYTHON PING Statistics----" % (self.destination)
-
-		if self.quiet_output:
-			self.response.output.append(msg)
-		else:
-			print(msg)
-
-		lost_count = self.send_count - self.receive_count
-		#print("%i packets lost" % lost_count)
-		lost_rate = float(lost_count) / self.send_count * 100.0
-
-		msg = "%d packets transmitted, %d packets received, %0.1f%% packet loss" % (self.send_count, self.receive_count, lost_rate)
-	
-		if self.quiet_output:
-			self.response.output.append(msg)
-			self.response.packet_lost = lost_count
-		else:
-			print(msg)
-
-		if self.receive_count > 0:
-			msg = "round-trip (ms)  min/avg/max = %0.3f/%0.3f/%0.3f" % (self.min_time, self.total_time / self.receive_count, self.max_time)
-			if self.quiet_output:
-				self.response.min_rtt = '%.3f' % self.min_time
-				self.response.avg_rtt = '%.3f' % (self.total_time / self.receive_count)
-				self.response.max_rtt = '%.3f' % self.max_time
-				self.response.output.append(msg)
-			else:
-				print(msg)
-
-		if self.quiet_output:
-			self.response.output.append('\n')
-		else:
-			print('')
-
-	#--------------------------------------------------------------------------
-
-	def signal_handler(self, signum, frame):
-		"""
-		Handle print_exit via signals
-		"""
-		self.print_exit()
-		msg = "\n(Terminated with signal %d)\n" % (signum)
-
-		if self.quiet_output:
-			self.response.output.append(msg)
-			self.response.ret_code = 0
-		else:
-			print(msg)
-
-		sys.exit(0)
-
-	def setup_signal_handler(self):
-		signal.signal(signal.SIGINT, self.signal_handler)   # Handle Ctrl-C
-		if hasattr(signal, "SIGBREAK"):
-			# Handle Ctrl-Break e.g. under Windows 
-			signal.signal(signal.SIGBREAK, self.signal_handler)
-
-	#--------------------------------------------------------------------------
+	def __init__(self, my_ip, num_of_hosts):
+		self.my_ip = my_ip
+		self.num_of_hosts = num_of_hosts
+		self.collected_files = dict()
+		self.wanted_files = dict()
+		self.added_files = dict()
+		self.connection_socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+		self.connection_socket.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
 
 	def header2dict(self, names, struct_format, data):
 		""" unpack the raw received IP and ICMP header informations to a dict """
 		unpacked_data = struct.unpack(struct_format, data)
 		return dict(zip(names, unpacked_data))
 
-	#--------------------------------------------------------------------------
-
-	def run(self, count=None, deadline=None):
-		"""
-		send and receive pings in a loop. Stop if count or until deadline.
-		"""
-		if not self.quiet_output:
-			self.setup_signal_handler()
-
-		while True:
-			delay = self.do()
-
-			self.seq_number += 1
-			if count and self.seq_number >= count:
-				break
-			if deadline and self.total_time >= deadline:
-				break
-
-			if delay == None:
-				delay = 0
-
-			# Pause for the remainder of the MAX_SLEEP period (if applicable)
-			if (MAX_SLEEP > delay):
-				time.sleep((MAX_SLEEP - delay) / 1000.0)
-
-		self.print_exit()
-		if self.quiet_output:
-			return self.response
-
-	def do(self):
-		
-		# Send one ICMP ECHO_REQUEST and receive the response until self.timeout
-		
-		try: 
-			current_socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
-			current_socket.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
-
-			# Bind the socket to a source address
-			
-		except socket.error, (errno, msg):
-			if errno == 1:
-				# Operation not permitted - Add more information to traceback
-				#the code should run as administrator
-				etype, evalue, etb = sys.exc_info()
-				evalue = etype(
-					"%s - Note that ICMP messages can only be sent from processes running as root." % evalue
-				)
-				raise etype, evalue, etb
-			raise # raise the original error
-
-		send_time = self.send_one_ping(current_socket)
-		if send_time == None:
-			return
-		self.send_count += 1
-
-		receive_time, packet_size, ip, ip_header, icmp_header = self.receive_one_ping(current_socket)
-		current_socket.close()
-		if receive_time:
-			self.receive_count += 1
-			delay = (receive_time - send_time) * 1000.0
-			self.total_time += delay
-			if self.min_time > delay:
-				self.min_time = delay
-			if self.max_time < delay:
-				self.max_time = delay
-
-			self.print_success(delay, ip, packet_size, ip_header, icmp_header)
-			return delay
-		else:
-			self.print_failed()
-
-
-	# send an ICMP ECHO_REQUEST packet
-	def send_one_ping(self, current_socket):
-		
-		#Create a new IP packet and set its source and destination IP addresses
-		src = self.source
-		dst = self.destination
-		ip = ImpactPacket.IP()
-		ip.set_ip_src(src)
-		ip.set_ip_dst(dst)	
-
-		#Create a new ICMP ECHO_REQUEST packet 
-		icmp = ImpactPacket.ICMP()
-		icmp.set_icmp_type(icmp.ICMP_ECHO)
-
-		#inlude a small payload inside the ICMP packet
-		#and have the ip packet contain the ICMP packet
-		icmp.contains(ImpactPacket.Data("testData"))
-		ip.contains(icmp)
-
-
-		#give the ICMP packet some ID
-		icmp.set_icmp_id(0x03)
-		
-		#set the ICMP packet checksum
-		icmp.set_icmp_cksum(0)
-		icmp.auto_checksum = 1
-
-		send_time = default_timer()
-
-		# send the provided ICMP packet over a 3rd socket
-		try:
-			current_socket.sendto(ip.get_packet(), (dst, 1)) # Port number is irrelevant for ICMP
-		except socket.error as e:
-			self.response.output.append("General failure (%s)" % (e.args[1]))
-			current_socket.close()
-			return
-
-		return send_time
-
-	# Receive the ping from the socket. 
-	#timeout = in ms		
-
-	def receive_one_ping(self, current_socket):
-		
-		timeout = self.timeout / 1000.0
-
-		while True: # Loop while waiting for packet or timeout
-			select_start = default_timer()
-			inputready, outputready, exceptready = select.select([current_socket], [], [], timeout)
-			select_duration = (default_timer() - select_start)
-			if inputready == []: # timeout
-				return None, 0, 0, 0, 0
-
-
-			packet_data, address = current_socket.recvfrom(ICMP_MAX_RECV)
-
-			icmp_header = self.header2dict(
-				names=[
-					"type", "code", "checksum",
-					"packet_id", "seq_number"
-				],
-				struct_format="!BBHHH",
-				data=packet_data[20:28]
-			)
-
-			receive_time = default_timer()
-
-			# if icmp_header["packet_id"] == self.own_id: # Our packet!!!
-			# it should not be our packet!!!Why?
-			if True:
-				ip_header = self.header2dict(
-					names=[
-						"version", "type", "length",
-						"id", "flags", "ttl", "protocol",
-						"checksum", "src_ip", "dest_ip"
-					],
-					struct_format="!BBHHHBBHII",
-					data=packet_data[:20]
-				)
-				packet_size = len(packet_data) - 28
-				ip = socket.inet_ntoa(struct.pack("!I", ip_header["src_ip"]))
-				# XXX: Why not ip = address[0] ???
-				return receive_time, packet_size, ip, ip_header, icmp_header
-
-			timeout = timeout - select_duration
-			if timeout <= 0:
-				return None, 0, 0, 0, 0
-
-def ping(source, hostname, timeout=1000, count=3, packet_size=55, *args, **kwargs):
-	p = Ping(source, hostname, timeout, packet_size, *args, **kwargs)
-	return p.run(count)
-
-class Client(object):
-	def __init__(self, my_ip, num_of_hosts):
-		self.my_ip = my_ip
-		self.num_of_hosts = num_of_hosts
-
-
-def generate_src_dst(my_ip, num_of_hosts):
-	src = "10.0.0." + random.randint(1, num_of_hosts)
-	while src == my_ip:
+	def generate_src_dst(self, my_ip, num_of_hosts):
 		src = "10.0.0." + random.randint(1, num_of_hosts)
-	dst = "10.0.0." + random.randint(1, num_of_hosts)
-	while dst == my_ip or src == dst:
+		while src == my_ip:
+			src = "10.0.0." + random.randint(1, num_of_hosts)
 		dst = "10.0.0." + random.randint(1, num_of_hosts)
-	return src, dst
+		while dst == my_ip or src == dst:
+			dst = "10.0.0." + random.randint(1, num_of_hosts)
+		return src, dst
 
-def send_packet(my_ip, num_of_hosts, connection_socket, mode="send_chunk", chunk_id=None, chunk_data=None, file_name=None, src_ip=None):
-	if mode == "send_chunk":
-		ip = ImpactPacket.IP()
-		src, dst = generate_src_dst(my_ip, num_of_hosts)
-		if src_ip is not None:
-			src = src_ip
-		ip.set_ip_src(src)
-		ip.set_ip_dst(dst)	
+	def send_packet(self, my_ip, num_of_hosts, connection_socket, mode="send_chunk", chunk_id=None, chunk_data=None, file_name=None, src_ip=None):
+		if mode == "send_chunk":
+			ip = ImpactPacket.IP()
+			src, dst = self.generate_src_dst(my_ip, num_of_hosts)
+			if src_ip is not None:
+				src = src_ip
+			ip.set_ip_src(src)
+			ip.set_ip_dst(dst)	
 
-		#Create a new ICMP ECHO_REQUEST packet 
-		icmp = ImpactPacket.ICMP()
-		icmp.set_icmp_type(icmp.ICMP_ECHO)
+			#Create a new ICMP ECHO_REQUEST packet 
+			icmp = ImpactPacket.ICMP()
+			icmp.set_icmp_type(icmp.ICMP_ECHO)
 
-		#inlude a small payload inside the ICMP packet
-		#and have the ip packet contain the ICMP packet
-		icmp.contains(ImpactPacket.Data(file_name + "$" + chunk_data))
-		ip.contains(icmp)
+			#inlude a small payload inside the ICMP packet
+			#and have the ip packet contain the ICMP packet
+			icmp.contains(ImpactPacket.Data(file_name + "$" + chunk_data))
+			ip.contains(icmp)
 
-		#give the ICMP packet some ID
-		icmp.set_icmp_id(chunk_id)
-		
-		#set the ICMP packet checksum
-		icmp.set_icmp_cksum(0)
-		icmp.auto_checksum = 1
+			#give the ICMP packet some ID
+			icmp.set_icmp_id(chunk_id)
+			
+			#set the ICMP packet checksum
+			icmp.set_icmp_cksum(0)
+			icmp.auto_checksum = 1
 
-		# send the provided ICMP packet over a 3rd socket
-		connection_socket.sendto(ip.get_packet(), (dst, 1)) # Port number is irrelevant for ICMP
+			# send the provided ICMP packet over a 3rd socket
+			connection_socket.sendto(ip.get_packet(), (dst, 1)) # Port number is irrelevant for ICMP
 
-	elif mode == "return_home":
-		ip = ImpactPacket.IP()
-		src, dst = generate_src_dst(my_ip, num_of_hosts)
-		ip.set_ip_src(src)
-		ip.set_ip_dst(dst)
+		elif mode == "return_home":
+			ip = ImpactPacket.IP()
+			src, dst = self.generate_src_dst(my_ip, num_of_hosts)
+			ip.set_ip_src(src)
+			ip.set_ip_dst(dst)
 
-		#Create a new ICMP ECHO_REQUEST packet 
-		icmp = ImpactPacket.ICMP()
-		icmp.set_icmp_type(icmp.ICMP_ECHO)
+			#Create a new ICMP ECHO_REQUEST packet 
+			icmp = ImpactPacket.ICMP()
+			icmp.set_icmp_type(icmp.ICMP_ECHO)
 
-		#inlude a small payload inside the ICMP packet
-		#and have the ip packet contain the ICMP packet
-		icmp.contains(ImpactPacket.Data("return_home" + "$" + file_name + "$" + my_ip))
-		ip.contains(icmp)
+			#inlude a small payload inside the ICMP packet
+			#and have the ip packet contain the ICMP packet
+			icmp.contains(ImpactPacket.Data("return_home" + "$" + file_name + "$" + my_ip))
+			ip.contains(icmp)
 
-		#give the ICMP packet some ID
-		icmp.set_icmp_id(0x03)
-		
-		#set the ICMP packet checksum
-		icmp.set_icmp_cksum(0)
-		icmp.auto_checksum = 1
+			#give the ICMP packet some ID
+			icmp.set_icmp_id(0x03)
+			
+			#set the ICMP packet checksum
+			icmp.set_icmp_cksum(0)
+			icmp.auto_checksum = 1
 
-		# send the provided ICMP packet over a 3rd socket
-		connection_socket.sendto(ip.get_packet(), (dst, 1)) # Port number is irrelevant for ICMP
+			# send the provided ICMP packet over a 3rd socket
+			connection_socket.sendto(ip.get_packet(), (dst, 1)) # Port number is irrelevant for ICMP
 
-def receive_packet(connection_socket):
-	packet_data, address = connection_socket.recvfrom(ICMP_MAX_RECV)
+	def receive_packet(self, connection_socket):
+		packet_data, address = connection_socket.recvfrom(ICMP_MAX_RECV)
 
-	icmp_header = header2dict(
-		names=[
-			"type", "code", "checksum",
-			"packet_id", "seq_number"
-		],
-		struct_format="!BBHHH",
-		data=packet_data[20:28]
-	)
-
-	if icmp_header["type"] == ICMP_ECHOREPLY:
-		payload_data = packet_data[28:].split("$")
-		if payload_data[0] == "return_home":
-			self.wanted_files.append((payload_data[1], payload_data[2]))
-		else:
-			if payload_data[0] in self.wanted_files:
-				send_packet(self.my_ip, self.num_of_hosts, self.connection_socket, chunk_id=int(icmp_header["id"]),
-					chunk_data=payload_data[1], file_name=payload_data[0], src_ip=self.wanted_files[payload_data[0]])
-			else:
-				send_packet(self.my_ip, self.num_of_hosts, self.connection_socket, chunk_id=int(icmp_header["id"]),
-					chunk_data=payload_data[1], file_name=payload_data[0])
-		ip_header = self.header2dict(
+		icmp_header = self.header2dict(
 			names=[
-				"version", "type", "length",
-				"id", "flags", "ttl", "protocol",
-				"checksum", "src_ip", "dest_ip"
+				"type", "code", "checksum",
+				"packet_id", "seq_number"
 			],
-			struct_format="!BBHHHBBHII",
-			data=packet_data[:20]
+			struct_format="!BBHHH",
+			data=packet_data[20:28]
 		)
-		return
-	else:
-		return
 
-def split_file(file_name, chunk_size=8):
-	chunks = []
-	f = open(file_name, 'rb')
-	chunk = f.read(chunk_size)
-	while chunk:
-		chunks.append(chunk)
+		if icmp_header["type"] == ICMP_ECHOREPLY:
+			payload_data = packet_data[28:].split("$")
+			if payload_data[0] == "return_home":
+				self.wanted_files[payload_data[1]] = payload_data[2]
+			else:
+				if payload_data[0] in self.wanted_files:
+					self.send_packet(self.my_ip, self.num_of_hosts, self.connection_socket, chunk_id=int(icmp_header["id"]),
+						chunk_data=payload_data[1], file_name=payload_data[0], src_ip=self.wanted_files[payload_data[0]])
+				elif payload_data[0] in self.added_files:
+					self.collect_chunk(payload_data[0], payload_data[1], int(icmp_header["id"]))
+				else:
+					self.send_packet(self.my_ip, self.num_of_hosts, self.connection_socket, chunk_id=int(icmp_header["id"]),
+						chunk_data=payload_data[1], file_name=payload_data[0])
+			return
+		else:
+			return
+
+	def split_file(self, file_name, chunk_size=8):
+		chunks = []
+		f = open(file_name, 'rb')
 		chunk = f.read(chunk_size)
-	return chunks
+		while chunk:
+			chunks.append(chunk)
+			chunk = f.read(chunk_size)
+		return chunks
 
-def pack_file(file_name, chunks):
-	f = open("recovered_" + file_name, "w+")
-	for chunk in chunks:
-		f.write(chunk)
-	f.close()
+	def collect_chunk(self, file_name, chunk_data, chunk_id):
+		self.collected_files[file_name][chunk_id] = chunk_data
+		if len(self.collected_files[file_name].keys()) == len(self.added_files[file_name].keys()):
+			self.pack_file(file_name, self.collected_files[file_name])
 
-def run_server(my_ip, num_of_hosts):
-	wanted_files = dict()
-	added_files = []
-	# create socket
-	connection_socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
-	connection_socket.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
-	while True:
-		inputready, outputready, exceptionready = select.select([connection_socket, sys.stdin], [], [])
-		# select stdin and socket
-		if sys.stdin in inputready:
-			command = ""
-			raw_input(command)
-			commandParts = command.split(" ")
-			if commandParts[0] == "return_home":
-				send_packet(my_ip, num_of_hosts, connection_socket, mode="return_home", file_name=commandParts[1])
-			elif commandParts[0] == "add_file":
-				chunks = split_file(commandParts[1])
-				added_files.append(commandParts[1])
-				for chunk_id, chunk in enumerate(chunks):
-					send_packet(my_ip, num_of_hosts, connection_socket, chunk_id=chunk_id, chunk_data=chunk, file_name=commandParts[1])
-				
+	def pack_file(self, file_name, chunks):
+		f = open("recovered_" + file_name, "w+")
+		for i in range(len(chunks.keys())):
+			f.write(chunks[i])
+		f.close()
 
-		elif connection_socket in inputready:
-			receive_packet()
-
-
-	# stdin --> add file --> send to random 
-	# stdin --> return home --> send payload : return_home file ip
-
-	# receive -->
-
+	def run_server(self, my_ip, num_of_hosts):
+		# create socket
+		
+		while True:
+			inputready, outputready, exceptionready = select.select([self.connection_socket, sys.stdin], [], [])
+			# select stdin and socket
+			if sys.stdin in inputready:
+				command = ""
+				raw_input(command)
+				commandParts = command.split(" ")
+				if commandParts[0] == "return_home":
+					self.send_packet(my_ip, num_of_hosts, self.connection_socket, mode="return_home", file_name=commandParts[1])
+				elif commandParts[0] == "add_file":
+					chunks = self.split_file(commandParts[1])
+					self.added_files[commandParts[1]] = len(chunks)
+					for chunk_id, chunk in enumerate(chunks):
+						self.send_packet(my_ip, num_of_hosts, self.connection_socket, chunk_id=chunk_id, chunk_data=chunk, file_name=commandParts[1])
+			elif self.connection_socket in inputready:
+				self.receive_packet(self.connection_socket)
