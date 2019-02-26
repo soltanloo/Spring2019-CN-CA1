@@ -383,6 +383,12 @@ def ping(source, hostname, timeout=1000, count=3, packet_size=55, *args, **kwarg
 	p = Ping(source, hostname, timeout, packet_size, *args, **kwargs)
 	return p.run(count)
 
+class Client(object):
+	def __init__(self, my_ip, num_of_hosts):
+		self.my_ip = my_ip
+		self.num_of_hosts = num_of_hosts
+
+
 def generate_src_dst(my_ip, num_of_hosts):
 	src = "10.0.0." + random.randint(1, num_of_hosts)
 	while src == my_ip:
@@ -392,10 +398,12 @@ def generate_src_dst(my_ip, num_of_hosts):
 		dst = "10.0.0." + random.randint(1, num_of_hosts)
 	return src, dst
 
-def send_packet(my_ip, num_of_hosts, connection_socket, mode="send_chunk", chunk_id=None, chunk_data=None, file_name=None):
+def send_packet(my_ip, num_of_hosts, connection_socket, mode="send_chunk", chunk_id=None, chunk_data=None, file_name=None, src_ip=None):
 	if mode == "send_chunk":
 		ip = ImpactPacket.IP()
 		src, dst = generate_src_dst(my_ip, num_of_hosts)
+		if src_ip is not None:
+			src = src_ip
 		ip.set_ip_src(src)
 		ip.set_ip_dst(dst)	
 
@@ -443,15 +451,66 @@ def send_packet(my_ip, num_of_hosts, connection_socket, mode="send_chunk", chunk
 		# send the provided ICMP packet over a 3rd socket
 		connection_socket.sendto(ip.get_packet(), (dst, 1)) # Port number is irrelevant for ICMP
 
+def receive_packet(connection_socket):
+	packet_data, address = connection_socket.recvfrom(ICMP_MAX_RECV)
+
+	icmp_header = header2dict(
+		names=[
+			"type", "code", "checksum",
+			"packet_id", "seq_number"
+		],
+		struct_format="!BBHHH",
+		data=packet_data[20:28]
+	)
+
+	if icmp_header["type"] == ICMP_ECHOREPLY:
+		payload_data = packet_data[28:].split("$")
+		if payload_data[0] == "return_home":
+			self.wanted_files.append((payload_data[1], payload_data[2]))
+		else:
+			if payload_data[0] in self.wanted_files:
+				send_packet(self.my_ip, self.num_of_hosts, self.connection_socket, chunk_id=int(icmp_header["id"]),
+					chunk_data=payload_data[1], file_name=payload_data[0], src_ip=self.wanted_files[payload_data[0]])
+			else:
+				send_packet(self.my_ip, self.num_of_hosts, self.connection_socket, chunk_id=int(icmp_header["id"]),
+					chunk_data=payload_data[1], file_name=payload_data[0])
+		ip_header = self.header2dict(
+			names=[
+				"version", "type", "length",
+				"id", "flags", "ttl", "protocol",
+				"checksum", "src_ip", "dest_ip"
+			],
+			struct_format="!BBHHHBBHII",
+			data=packet_data[:20]
+		)
+		return
+	else:
+		return
+
+def split_file(file_name, chunk_size=8):
+	chunks = []
+	f = open(file_name, 'rb')
+	chunk = f.read(chunk_size)
+	while chunk:
+		chunks.append(chunk)
+		chunk = f.read(chunk_size)
+	return chunks
+
+def pack_file(file_name, chunks):
+	f = open("recovered_" + file_name, "w+")
+	for chunk in chunks:
+		f.write(chunk)
+	f.close()
 
 def run_server(my_ip, num_of_hosts):
-	wanted_files = []
+	wanted_files = dict()
+	added_files = []
 	# create socket
 	connection_socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
 	connection_socket.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
-	# select stdin and socket
 	while True:
 		inputready, outputready, exceptionready = select.select([connection_socket, sys.stdin], [], [])
+		# select stdin and socket
 		if sys.stdin in inputready:
 			command = ""
 			raw_input(command)
@@ -459,7 +518,8 @@ def run_server(my_ip, num_of_hosts):
 			if commandParts[0] == "return_home":
 				send_packet(my_ip, num_of_hosts, connection_socket, mode="return_home", file_name=commandParts[1])
 			elif commandParts[0] == "add_file":
-				# chunks = split_file()
+				chunks = split_file(commandParts[1])
+				added_files.append(commandParts[1])
 				for chunk_id, chunk in enumerate(chunks):
 					send_packet(my_ip, num_of_hosts, connection_socket, chunk_id=chunk_id, chunk_data=chunk, file_name=commandParts[1])
 				
