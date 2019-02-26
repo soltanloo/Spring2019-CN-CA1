@@ -15,8 +15,8 @@ import struct
 import sys
 import time
 import socket,sys
+import random
 from impacket import ImpactPacket
-import ifaddr
 
 
 
@@ -383,9 +383,69 @@ def ping(source, hostname, timeout=1000, count=3, packet_size=55, *args, **kwarg
 	p = Ping(source, hostname, timeout, packet_size, *args, **kwargs)
 	return p.run(count)
 
-def send_packet(chunk_id, chunk_data, )
+def generate_src_dst(my_ip, num_of_hosts):
+	src = "10.0.0." + random.randint(1, num_of_hosts)
+	while src == my_ip:
+		src = "10.0.0." + random.randint(1, num_of_hosts)
+	dst = "10.0.0." + random.randint(1, num_of_hosts)
+	while dst == my_ip or src == dst:
+		dst = "10.0.0." + random.randint(1, num_of_hosts)
+	return src, dst
 
-def run_server():
+def send_packet(my_ip, num_of_hosts, connection_socket, mode="send_chunk", chunk_id=None, chunk_data=None, file_name=None):
+	if mode == "send_chunk":
+		ip = ImpactPacket.IP()
+		src, dst = generate_src_dst(my_ip, num_of_hosts)
+		ip.set_ip_src(src)
+		ip.set_ip_dst(dst)	
+
+		#Create a new ICMP ECHO_REQUEST packet 
+		icmp = ImpactPacket.ICMP()
+		icmp.set_icmp_type(icmp.ICMP_ECHO)
+
+		#inlude a small payload inside the ICMP packet
+		#and have the ip packet contain the ICMP packet
+		icmp.contains(ImpactPacket.Data(file_name + "$" + chunk_data))
+		ip.contains(icmp)
+
+		#give the ICMP packet some ID
+		icmp.set_icmp_id(chunk_id)
+		
+		#set the ICMP packet checksum
+		icmp.set_icmp_cksum(0)
+		icmp.auto_checksum = 1
+
+		# send the provided ICMP packet over a 3rd socket
+		connection_socket.sendto(ip.get_packet(), (dst, 1)) # Port number is irrelevant for ICMP
+
+	elif mode == "return_home":
+		ip = ImpactPacket.IP()
+		src, dst = generate_src_dst(my_ip, num_of_hosts)
+		ip.set_ip_src(src)
+		ip.set_ip_dst(dst)
+
+		#Create a new ICMP ECHO_REQUEST packet 
+		icmp = ImpactPacket.ICMP()
+		icmp.set_icmp_type(icmp.ICMP_ECHO)
+
+		#inlude a small payload inside the ICMP packet
+		#and have the ip packet contain the ICMP packet
+		icmp.contains(ImpactPacket.Data("return_home" + "$" + file_name + "$" + my_ip))
+		ip.contains(icmp)
+
+		#give the ICMP packet some ID
+		icmp.set_icmp_id(0x03)
+		
+		#set the ICMP packet checksum
+		icmp.set_icmp_cksum(0)
+		icmp.auto_checksum = 1
+
+		# send the provided ICMP packet over a 3rd socket
+		connection_socket.sendto(ip.get_packet(), (dst, 1)) # Port number is irrelevant for ICMP
+
+
+def run_server(my_ip, num_of_hosts):
+	wanted_files = []
 	# create socket
 	connection_socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
 	connection_socket.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
@@ -397,11 +457,11 @@ def run_server():
 			raw_input(command)
 			commandParts = command.split(" ")
 			if commandParts[0] == "return_home":
-				send_packet(mode="return_home", my_ip=my_ip)
+				send_packet(my_ip, num_of_hosts, connection_socket, mode="return_home", file_name=commandParts[1])
 			elif commandParts[0] == "add_file":
-				chunks = split_file()
+				# chunks = split_file()
 				for chunk_id, chunk in enumerate(chunks):
-					send_packet(chunk_id=chunk_id, chunk_data=chunk, my_ip)
+					send_packet(my_ip, num_of_hosts, connection_socket, chunk_id=chunk_id, chunk_data=chunk, file_name=commandParts[1])
 				
 
 		elif connection_socket in inputready:
