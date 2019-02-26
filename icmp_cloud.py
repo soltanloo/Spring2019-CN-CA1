@@ -119,11 +119,15 @@ class Client(object):
 		if icmp_header["type"] == ICMP_ECHOREPLY:
 			payload_data = packet_data[28:].split("$")
 			if payload_data[0] == "return_home":
+				print("return_home packet recieved!, src_ip:", payload_data[2], "file_name:", payload_data[1])
 				self.wanted_files[payload_data[1]] = payload_data[2]
 			else:
 				if payload_data[0] in self.wanted_files:
 					self.send_packet(chunk_id=int(icmp_header["packet_id"]),
 						chunk_data=payload_data[1], file_name=payload_data[0], src_ip=self.wanted_files[payload_data[0]])
+
+					# print("SENDING reutrn packets!!!\n", "file name:", payload_data[0], "chunk id:", int(icmp_header["packet_id"]), "src ip:", self.wanted_files[payload_data[0]])
+				
 				elif payload_data[0] in self.added_files and payload_data[0] in self.our_wanted_files:
 					self.collect_chunk(payload_data[0], payload_data[1], int(icmp_header["packet_id"]))
 				else:
@@ -143,19 +147,22 @@ class Client(object):
 		return chunks
 
 	def collect_chunk(self, file_name, chunk_data, chunk_id):
+		print("collecting chunks, num:", chunk_id, "data:", chunk_data)
 		self.collected_files[file_name][chunk_id] = chunk_data
-		# print(self.collected_files[file_name].keys())
-		if (len(self.collected_files[file_name].keys()) == (self.added_files[file_name])):
+		# print("added_files[file_name] = ", self.added_files[file_name])
+		# print("collected_files[file_name].keys() len is :", len(self.collected_files[file_name].keys()))
+		if (len(self.collected_files[file_name].keys()) == (self.added_files[file_name] - 15)):
 			self.pack_file(file_name, self.collected_files[file_name])
 			self.our_wanted_files.remove(self.our_wanted_files.index(file_name))
 			del self.added_files[file_name]
 
 	def pack_file(self, file_name, chunks):
-		f = open("recovered_" + file_name, "w")
+		f = open("recovered_" + file_name, "w+")
 		for i in range(len(chunks.keys())):
 			f.write(chunks[i])
 			print(chunks[i])
 		f.close()
+		print("file recovered :		recoverd_" + file_name)
 
 	def run_server(self):
 		while True:
