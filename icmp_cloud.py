@@ -383,7 +383,7 @@ def ping(source, hostname, timeout=1000, count=3, packet_size=55, *args, **kwarg
 	p = Ping(source, hostname, timeout, packet_size, *args, **kwargs)
 	return p.run(count)
 
-def run_distribution_network():
+def run_server():
 	# create socket
 	connection_socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
 	connection_socket.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
@@ -391,22 +391,23 @@ def run_distribution_network():
 	while True:
 		inputready, outputready, exceptionready = select.select([connection_socket, sys.stdin], [], [])
 		if sys.stdin in inputready:
+			command = ""
 			raw_input(command)
-			if command.split(" ")[0] == "return_home":
+			commandParts = command.split()
+			if commandParts[0] == "return_home":
 
+			elif commandParts[0] == "add_file":
+				chunks = split_file()
+				for chunk in chunks:
+					send_packet()
+				
 
 		elif connection_socket in inputready:
-			
+			receive_packet()
 
 
 	# stdin --> add file --> send to random 
 	# stdin --> return home --> send payload : return_home file ip
 
 	# receive -->
-
-	
-	 
-ping(Your IP Address, Destination IP Address)    #put your IP and destination IP address as the ping function argument and run the code. you can ping 
-												 #the destination with your own code!!!
-
 
