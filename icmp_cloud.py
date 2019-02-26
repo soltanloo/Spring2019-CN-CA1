@@ -32,6 +32,7 @@ class Client(object):
 		self.num_of_hosts = num_of_hosts
 		self.collected_files = dict()
 		self.wanted_files = dict()
+		self.our_wanted_files = []
 		self.added_files = dict()
 		self.connection_socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
 		self.connection_socket.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
@@ -42,12 +43,12 @@ class Client(object):
 		return dict(zip(names, unpacked_data))
 
 	def generate_src_dst(self):
-		src = "10.0.0." + random.randint(1, self.num_of_hosts)
+		src = "10.0.0." + str(random.randint(1, self.num_of_hosts))
 		while src == self.my_ip:
-			src = "10.0.0." + random.randint(1, self.num_of_hosts)
-		dst = "10.0.0." + random.randint(1, self.num_of_hosts)
+			src = "10.0.0." + str(random.randint(1, self.num_of_hosts))
+		dst = "10.0.0." + str(random.randint(1, self.num_of_hosts))
 		while dst == self.my_ip or src == dst:
-			dst = "10.0.0." + random.randint(1, self.num_of_hosts)
+			dst = "10.0.0." + str(random.randint(1, self.num_of_hosts))
 		return src, dst
 
 	def send_packet(self, mode="send_chunk", chunk_id=None, chunk_data=None, file_name=None, src_ip=None):
@@ -121,12 +122,12 @@ class Client(object):
 				self.wanted_files[payload_data[1]] = payload_data[2]
 			else:
 				if payload_data[0] in self.wanted_files:
-					self.send_packet(chunk_id=int(icmp_header["id"]),
+					self.send_packet(chunk_id=int(icmp_header["packet_id"]),
 						chunk_data=payload_data[1], file_name=payload_data[0], src_ip=self.wanted_files[payload_data[0]])
-				elif payload_data[0] in self.added_files:
-					self.collect_chunk(payload_data[0], payload_data[1], int(icmp_header["id"]))
+				elif payload_data[0] in self.added_files and payload_data[0] in self.our_wanted_files:
+					self.collect_chunk(payload_data[0], payload_data[1], int(icmp_header["packet_id"]))
 				else:
-					self.send_packet(chunk_id=int(icmp_header["id"]),
+					self.send_packet(chunk_id=int(icmp_header["packet_id"]),
 						chunk_data=payload_data[1], file_name=payload_data[0])
 			return
 		else:
@@ -143,23 +144,28 @@ class Client(object):
 
 	def collect_chunk(self, file_name, chunk_data, chunk_id):
 		self.collected_files[file_name][chunk_id] = chunk_data
-		if len(self.collected_files[file_name].keys()) == len(self.added_files[file_name].keys()):
+		# print(self.collected_files[file_name].keys())
+		if (len(self.collected_files[file_name].keys()) == (self.added_files[file_name])):
 			self.pack_file(file_name, self.collected_files[file_name])
+			self.our_wanted_files.remove(self.our_wanted_files.index(file_name))
+			del self.added_files[file_name]
 
 	def pack_file(self, file_name, chunks):
-		f = open("recovered_" + file_name, "w+")
+		f = open("recovered_" + file_name, "w")
 		for i in range(len(chunks.keys())):
 			f.write(chunks[i])
+			print(chunks[i])
 		f.close()
 
 	def run_server(self):
 		while True:
 			inputready, outputready, exceptionready = select.select([self.connection_socket, sys.stdin], [], [])
 			if sys.stdin in inputready:
-				command = ""
-				raw_input(command)
+				command = sys.stdin.readline().rstrip()
 				commandParts = command.split(" ")
 				if commandParts[0] == "return_home":
+					self.our_wanted_files.append(commandParts[1])
+					self.collected_files[commandParts[1]] = dict()
 					self.send_packet(mode="return_home", file_name=commandParts[1])
 				elif commandParts[0] == "add_file":
 					chunks = self.split_file(commandParts[1])
